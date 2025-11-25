@@ -373,80 +373,101 @@ def student_dashboard(request):
 @student_required
 def browse_products_view(request):
     """
-    Displays all available products organized by category with search functionality.
-    
-    Fetches products from the database, groups them by category, and supports
-    keyword search filtering. Returns categorized product data for template rendering.
-    Handles errors gracefully with user-friendly messages.
+    Shows all products grouped by category with optional search filtering.
+
+    Retrieves products from Supabase, applies search conditions if provided,
+    organizes them by their category name, and returns the structured data
+    to the template for rendering. Errors are caught and shown to the user.
     """
+    
     search_query = request.GET.get('search', '').strip()
     categorized_products = defaultdict(list)
-    
+
     try:
-        # Start the base query
-        query = supabase.table('products').select('*').order('created_at', desc=True)
+        # Base fetch query
+        base_query = supabase.table('products') \
+                             .select('*') \
+                             .order('created_at', desc=True)
 
-        # If there's a search query, add the filter to the query
+        # Apply search filter if needed
         if search_query:
-            query = query.ilike('name', f'%{search_query}%')
-        
-        response = query.execute() 
-        products = response.data
+            base_query = base_query.ilike('name', f'%{search_query}%')
 
+        # Execute and collect products
+        result = base_query.execute()
+        products = result.data
+
+        # Organize by category
         if products:
-            for product in products:
-                # Group products by their category, defaulting to 'Uncategorized'
-                category_name = product.get('category') or 'Uncategorized'
-                categorized_products[category_name].append(product)
-    
-    except Exception as e:
-        messages.error(request, f"Could not fetch products: {e}")
+            for item in products:
+                category = item.get('category') or 'Uncategorized'
+                categorized_products[category].append(item)
+
+    except Exception as error:
+        messages.error(request, f"Could not fetch products: {error}")
 
     context = {
-        'categorized_products': dict(categorized_products), 
+        'categorized_products': dict(categorized_products),
         'search_query': search_query,
         'active_page': 'browse',
         'page_title': 'Browse Products',
     }
+
     return render(request, 'dashboards/browse_products.html', context)
 
 @student_required
 def my_reservations_view(request):
     """
-    Displays the student's active reservations and backorders.
-    
-    Fetches all pending reservations and backorders associated with the authenticated user.
-    Separates them by order_type and handles date parsing for display.
-    Shows only items currently in pending status.
+    Shows the logged-in student's pending reservations and backorders.
+
+    Retrieves reservation data via RPC tied to the authenticated user. 
+    Filters only items marked as 'pending', formats dates for readability, 
+    and separates entries based on order_type for template rendering.
     """
-    reservations, backorders = [], []
+    
+    reservations = []
+    backorders = []
+
     try:
         user_id = request.user.id
-        response = supabase.rpc('get_my_detailed_reservations', {'p_user_id': user_id}).execute()
-        
-        if response.data:
-            for item in response.data:
-                # Only show items that are currently in a 'pending' state
-                if item.get('status') == 'pending':
-                    if item.get('created_at'):
-                        item['created_at'] = datetime.fromisoformat(item['created_at'])
-                    if item.get('expires_at'):
-                        item['expires_at'] = datetime.fromisoformat(item['expires_at'])
-                    
-                    if item['order_type'] == 'reservation':
-                        reservations.append(item)
-                    elif item['order_type'] == 'backorder':
-                        backorders.append(item)
-                            
-    except Exception as e:
-        messages.error(request, f"Could not fetch your reservations: {e}")
-        
+        rpc_result = supabase.rpc(
+            'get_my_detailed_reservations',
+            {'p_user_id': user_id}
+        ).execute()
+
+        records = rpc_result.data
+
+        if records:
+            for entry in records:
+
+                # Skip anything not pending
+                if entry.get('status') != 'pending':
+                    continue
+
+                # Parse datetime fields when present
+                if entry.get('created_at'):
+                    entry['created_at'] = datetime.fromisoformat(entry['created_at'])
+
+                if entry.get('expires_at'):
+                    entry['expires_at'] = datetime.fromisoformat(entry['expires_at'])
+
+                # Categorize by type
+                order_type = entry.get('order_type')
+                if order_type == 'reservation':
+                    reservations.append(entry)
+                elif order_type == 'backorder':
+                    backorders.append(entry)
+
+    except Exception as error:
+        messages.error(request, f"Could not fetch your reservations: {error}")
+
     context = {
-        'reservations': reservations, 
+        'reservations': reservations,
         'backorders': backorders,
-        'active_page': 'reservations', 
+        'active_page': 'reservations',
         'page_title': 'My Reservations',
     }
+
     return render(request, 'dashboards/my_reservations.html', context)
 
 @student_required
@@ -458,70 +479,79 @@ def my_orders_view(request):
     (cancelled/rejected) statuses. Handles date and expiration time parsing for proper display.
     Provides comprehensive order tracking and history view.
     """
+
     pending_orders, approved_orders, completed_orders, other_orders = [], [], [], []
-    
+
     try:
         user_id = request.user.id
+
         # Call the detailed function to get product and user info
-        response = supabase.rpc('get_my_detailed_orders', {'p_user_id': user_id}).execute()
-        
+        response = supabase.rpc(
+            'get_my_detailed_orders',
+            {'p_user_id': user_id}
+        ).execute()
+
         if response.data:
             all_orders = response.data
-            
+
             # Convert date strings to datetime objects for proper formatting
             for item in all_orders:
+
+                # created_at parsing
                 if item.get('created_at'):
                     created_at_str = item['created_at']
                     try:
-                        # Attempt parsing with timezone
                         item['created_at'] = datetime.fromisoformat(created_at_str)
                     except ValueError:
-                        # Fallback for naive datetime strings
                         try:
-                            item['created_at'] = datetime.strptime(created_at_str, '%Y-%m-%dT%H:%M:%S.%f')
+                            item['created_at'] = datetime.strptime(
+                                created_at_str, '%Y-%m-%dT%H:%M:%S.%f'
+                            )
                         except ValueError:
-                            item['created_at'] = None # Or keep original string
-                
-                # --- Add expires_at parsing ---
+                            item['created_at'] = None  # Or keep original string
+
+                # expires_at parsing
                 if item.get('expires_at'):
                     expires_at_str = item['expires_at']
                     try:
-                        # Attempt parsing with timezone
                         item['expires_at'] = datetime.fromisoformat(expires_at_str)
                     except ValueError:
-                        # Fallback for naive datetime strings
                         try:
-                            item['expires_at'] = datetime.strptime(expires_at_str, '%Y-%m-%dT%H:%M:%S.%f')
+                            item['expires_at'] = datetime.strptime(
+                                expires_at_str, '%Y-%m-%dT%H:%M:%S.%f'
+                            )
                         except ValueError:
-                            item['expires_at'] = None # Or keep original string
+                            item['expires_at'] = None
                 else:
-                    item['expires_at'] = None # Ensure the key exists
+                    item['expires_at'] = None  # Ensure the key exists
 
             # Separate orders into lists based on status
             for item in all_orders:
-                status = item.get('status', 'unknown') 
-                if status == 'pending': 
+                status = item.get('status', 'unknown')
+
+                if status == 'pending':
                     pending_orders.append(item)
-                elif status == 'approved': 
+                elif status == 'approved':
                     approved_orders.append(item)
-                elif status == 'completed': 
+                elif status == 'completed':
                     completed_orders.append(item)
-                else: # Includes 'cancelled', 'rejected', etc.
+                else:  # Includes cancelled, rejected, etc.
                     other_orders.append(item)
-                        
+
     except Exception as e:
         messages.error(request, f"Could not fetch your orders: {e}")
         pending_orders, approved_orders, completed_orders, other_orders = [], [], [], []
 
     context = {
-        'pending_orders': pending_orders, 
+        'pending_orders': pending_orders,
         'approved_orders': approved_orders,
-        'completed_orders': completed_orders, 
+        'completed_orders': completed_orders,
         'other_orders': other_orders,
-        'search_query': '', # JS handles filtering
-        'active_page': 'orders', 
+        'search_query': '',  # JS handles filtering
+        'active_page': 'orders',
         'page_title': 'My Orders',
     }
+
     return render(request, 'dashboards/my_orders.html', context)
 
 @student_required
@@ -895,49 +925,95 @@ def student_profile_view(request):
 def cancel_reservation_view(request, reservation_id):
     """
     Allows students to cancel their own reservation via AJAX POST request.
-    
-    Processes cancellation of a specific reservation by calling the RPC function
-    to update status to cancelled. Verifies ownership implicitly through RLS.
-    Returns JSON confirmation of successful cancellation.
+
+    Uses Supabase RPC to mark the specified reservation as cancelled.
+    Ownership enforcement relies on RLS rules. Responds with JSON to confirm
+    successful cancellation or return appropriate error messages.
     """
+
     if request.method == 'POST':
         try:
-            # Re-use the admin's 'cancel' function for efficiency
-            supabase.rpc('cancel_or_reject_order', {
-                'p_order_id': reservation_id, 
-                'p_new_status': 'cancelled'
-            }).execute()
-            
-            return JsonResponse({'success': True, 'message': '✅ Your reservation has been successfully cancelled.'})
-            
+            # Utilize the admin's shared cancel/reject RPC for processing
+            supabase.rpc(
+                'cancel_or_reject_order',
+                {
+                    'p_order_id': reservation_id,
+                    'p_new_status': 'cancelled'
+                }
+            ).execute()
+
+            return JsonResponse({
+                'success': True,
+                'message': '✅ Your reservation has been successfully cancelled.'
+            })
+
         except Exception as e:
-            return JsonResponse({'success': False, 'error': f"Could not cancel the reservation: {e}"}, status=400)
-            
-    return JsonResponse({'success': False, 'error': 'Invalid request method.'}, status=400)
+            return JsonResponse(
+                {
+                    'success': False,
+                    'error': f"Could not cancel the reservation: {e}"
+                },
+                status=400
+            )
+
+    return JsonResponse(
+        {
+            'success': False,
+            'error': 'Invalid request method.'
+        },
+        status=400
+    )
 
 @student_required
 def cancel_order_view(request, order_id):
-    """ 
+    """
     Allows students to cancel approved orders via AJAX POST request.
     
     Verifies the order is approved and belongs to the authenticated student before cancellation.
     Calls RPC to cancel order and restore product stock. Includes ownership validation.
     Returns JSON response confirming cancellation or error details.
     """
+
     if request.method == 'POST' and request.headers.get('X-Requested-With') == 'XMLHttpRequest':
         try:
             user_id = request.user.id
+
             # Ensure the order is 'approved' and belongs to the user
-            response = supabase.table('orders').select('id').eq('id', order_id).eq('user_id', user_id).eq('status', 'approved').single().execute()
+            response = (
+                supabase.table('orders')
+                .select('id')
+                .eq('id', order_id)
+                .eq('user_id', user_id)
+                .eq('status', 'approved')
+                .single()
+                .execute()
+            )
+
             if not response.data:
                 raise Exception("Order not found or cannot be cancelled.")
-            
+
             # Call RPC to cancel and restore stock
-            supabase.rpc('cancel_or_reject_order', {'p_order_id': order_id, 'p_new_status': 'cancelled'}).execute()
-            return JsonResponse({'success': True, 'message': "✅ Your order has been successfully cancelled.", 'order_id': order_id})
+            supabase.rpc(
+                'cancel_or_reject_order',
+                {'p_order_id': order_id, 'p_new_status': 'cancelled'}
+            ).execute()
+
+            return JsonResponse({
+                'success': True,
+                'message': "✅ Your order has been successfully cancelled.",
+                'order_id': order_id
+            })
+
         except Exception as e:
-            return JsonResponse({'success': False, 'error': f"Could not cancel the order: {e}"}, status=400)
-    return JsonResponse({'success': False, 'error': 'Invalid request.'}, status=400)
+            return JsonResponse(
+                {'success': False, 'error': f"Could not cancel the order: {e}"},
+                status=400
+            )
+
+    return JsonResponse(
+        {'success': False, 'error': 'Invalid request.'},
+        status=400
+    )
 
  
 
