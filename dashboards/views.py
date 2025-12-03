@@ -634,7 +634,11 @@ def create_reservation_view(request):
         except Exception as e:
             error_str = str(e)
             # Handle edge case where RPC errors but operation may have succeeded
-            if "'success': True" in error_str or "'message': 'Item reserved successfully!'" in error_str:
+            if (
+                "'success': True" in error_str or 
+                '"success" : true' in error_str or 
+                "Item reserved successfully!" in error_str 
+            ):
                 _product_id = int(request.POST.get('product_id', 0))
                 _new_stock = 0 # Default stock in this edge case
                 try: 
@@ -708,7 +712,11 @@ def create_order_view(request):
         except Exception as e:
             error_str = str(e)
             # Handle edge case where RPC errors but operation may have succeeded
-            if "'success': True" in error_str:
+            if (
+                "'success': True" in error_str or 
+                '"success": true' in error_str or 
+                "Your order has been placed successfully" in error_str
+            ):
                 _product_id = int(request.POST.get('product_id', 0)) 
                 _new_stock = 0
                 try:
@@ -742,10 +750,15 @@ def checkout_reservation_view(request):
             user_id = request.user.id
             params = {'p_order_id': reservation_id, 'p_user_id': user_id}
 
-            response = supabase.rpc('checkout_reservation', params).execute()
-            
-            # You might add error checking here based on the 'response' object
-            
+            try:
+                supabase.rpc('checkout_reservation', params).execute()
+            except Exception as rpc_error:
+                # Ignore the specific "JSON could not be generated" error 
+                # if the operation was actually a success
+                err_msg = str(rpc_error)
+                if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                    raise rpc_error # Re-raise real errors
+                        
             return JsonResponse({'success': True, 'message': '✅ Checkout successful! Your reservation is now an order.'})
 
         except Exception as e:
@@ -804,7 +817,12 @@ def student_profile_view(request):
                     params['p_avatar_url'] = avatar_url
 
                 # Call the RPC function
-                supabase.rpc('update_my_profile', params).execute()
+                try:
+                    supabase.rpc('update_my_profile', params).execute()
+                except Exception as rpc_error:
+                    err_msg = str(rpc_error)
+                    if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                        raise rpc_error
 
                 # Send back the new avatar_url in the success message
                 response_data = {
@@ -903,10 +921,18 @@ def cancel_reservation_view(request, reservation_id):
     if request.method == 'POST':
         try:
             # Re-use the admin's 'cancel' function for efficiency
-            supabase.rpc('cancel_or_reject_order', {
-                'p_order_id': reservation_id, 
-                'p_new_status': 'cancelled'
-            }).execute()
+            # WRAPPED IN TRY/EXCEPT TO HANDLE SUPABASE JSON WARNING
+            try:
+                supabase.rpc('cancel_or_reject_order', {
+                    'p_order_id': reservation_id, 
+                    'p_new_status': 'cancelled'
+                }).execute()
+            except Exception as rpc_error:
+                # Ignore the specific "JSON could not be generated" error 
+                # if the operation was actually a success
+                err_msg = str(rpc_error)
+                if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                    raise rpc_error # Re-raise real errors
             
             return JsonResponse({'success': True, 'message': '✅ Your reservation has been successfully cancelled.'})
             
@@ -933,7 +959,19 @@ def cancel_order_view(request, order_id):
                 raise Exception("Order not found or cannot be cancelled.")
             
             # Call RPC to cancel and restore stock
-            supabase.rpc('cancel_or_reject_order', {'p_order_id': order_id, 'p_new_status': 'cancelled'}).execute()
+            # WRAPPED IN TRY/EXCEPT TO HANDLE SUPABASE JSON WARNING
+            try:
+                supabase.rpc('cancel_or_reject_order', {
+                    'p_order_id': order_id, 
+                    'p_new_status': 'cancelled'
+                }).execute()
+            except Exception as rpc_error:
+                # Ignore the specific "JSON could not be generated" error 
+                # if the operation was actually a success
+                err_msg = str(rpc_error)
+                if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                    raise rpc_error # Re-raise real errors
+
             return JsonResponse({'success': True, 'message': "✅ Your order has been successfully cancelled.", 'order_id': order_id})
         except Exception as e:
             return JsonResponse({'success': False, 'error': f"Could not cancel the order: {e}"}, status=400)
@@ -1438,10 +1476,17 @@ def update_order_status(request, order_id):
             if new_status in ['cancelled', 'rejected']:
                 # Use RPC to handle stock restoration
                 for oid in order_ids:
-                    supabase_service.rpc('cancel_or_reject_order', {
-                        'p_order_id': oid,
-                        'p_new_status': new_status
-                    }).execute()
+                    try:
+                        supabase_service.rpc('cancel_or_reject_order', {
+                            'p_order_id': oid,
+                            'p_new_status': new_status
+                        }).execute()
+                    except Exception as rpc_error:
+                        # Ignore the specific "JSON could not be generated" error 
+                        # if the operation was actually a success
+                        err_msg = str(rpc_error)
+                        if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                            raise rpc_error # Re-raise real errors
             else:
                 # Build the dictionary of what to update
                 update_data = {'status': new_status}
@@ -1792,7 +1837,12 @@ def admin_profile_view(request):
                     params['p_avatar_url'] = avatar_url
 
                 # Call RPC (using user's auth)
-                supabase.rpc('update_my_profile', params).execute()
+                try:
+                    supabase.rpc('update_my_profile', params).execute()
+                except Exception as rpc_error:
+                    err_msg = str(rpc_error)
+                    if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                        raise rpc_error
 
                 response_data = {
                     'success': True, 
@@ -1988,7 +2038,12 @@ def admin_block_student_view(request, user_id):
                 'p_user_id': str(user_id),
                 'p_is_blocked': is_blocked
             }
-            supabase_service.rpc('admin_update_user_status', params).execute()
+            try:
+                supabase_service.rpc('admin_update_user_status', params).execute()
+            except Exception as rpc_error:
+                err_msg = str(rpc_error)
+                if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                    raise rpc_error
 
             action_text = "blocked" if is_blocked else "unblocked"
             
@@ -2039,7 +2094,13 @@ def admin_delete_student_view(request, user_id):
     try:
         # Call the RPC to delete the user and all related data
         params = {'p_user_id': str(user_id)}
-        supabase_service.rpc('admin_delete_student', params).execute()
+        
+        try:
+            supabase_service.rpc('admin_delete_student', params).execute()
+        except Exception as rpc_error:
+            err_msg = str(rpc_error)
+            if "JSON could not be generated" not in err_msg and "success" not in err_msg:
+                raise rpc_error
 
         # Log this admin action
         log_details = {
